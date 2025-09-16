@@ -97,7 +97,7 @@ const POC = () => {
 
     const now = new Date();
     const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endDate = new Date(now.getFullYear() + 1, now.getMonth(), 0);
+    const endDate = new Date(now.getFullYear() + 1, 11, 31);
 
     const zonedStart = ZonedDate.fromLocalDate(startDate, 'America/New_York');
     const zonedEnd = ZonedDate.fromLocalDate(endDate, 'America/New_York');
@@ -105,7 +105,20 @@ const POC = () => {
     const [taskData] = React.useState(groupPlansData(data.Data));
     const [dependencyData] = React.useState([]);
 
-    const [expandedState, setExpandedState] = React.useState<number[]>([]);
+    const getAllTaskIds = (tasks: Array<{ id: string | number; children?: Array<{ id: string | number }> }>): Array<string | number> => {
+        const ids: Array<string | number> = [];
+        tasks.forEach((group) => {
+            ids.push(group.id);
+            if (Array.isArray(group.children)) {
+                group.children.forEach((child) => {
+                    ids.push(child.id);
+                });
+            }
+        });
+        return ids;
+    };
+
+    const [expandedState, setExpandedState] = React.useState(() => getAllTaskIds(groupPlansData(data.Data)));
     const [columnsState, setColumnsState] = React.useState<Array<any>>(columns);
 
     const onColumnResize = React.useCallback(
