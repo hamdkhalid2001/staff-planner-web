@@ -3,7 +3,6 @@ export const exampleTaskTypeTaskData = [
         id: 7,
         title: 'Software validation, research and implementation',
         orderId: 0,
-        percentComplete: 0.45,
         isExpanded: false,
         children: [
             {

@@ -20,7 +20,40 @@ import {
 } from '@progress/kendo-react-gantt';
 
 import { getter } from '@progress/kendo-react-common';
-import { exampleDependencyData, exampleTaskData } from './shared-gt-data';
+import { data } from './shared-plans';
+
+// Utility to convert MS JSON date string to JS Date
+function parseMSDate(msDate: string): Date | null {
+    if (!msDate) return null;
+    const match = /\/Date\((\d+)\)\//.exec(msDate);
+    return match ? new Date(Number(match[1])) : null;
+}
+
+// Group and map data for Gantt
+function groupPlansData(raw: any[]): any[] {
+    const groups: { [key: string]: any } = {};
+    raw.forEach(item => {
+        const groupKey = `${item.ProjectCode} | ${item.ProjectName} | ${item.Department}`;
+        if (!groups[groupKey]) {
+            groups[groupKey] = {
+                id: groupKey,
+                title: groupKey,
+                isExpanded: true,
+                children: []
+            };
+        }
+        groups[groupKey].children.push({
+            id: item.Id,
+            title: item.Title,
+            designation: item.Designation,
+            grade: item.Grade,
+            start: parseMSDate(item.StartDate),
+            end: parseMSDate(item.EndDate),
+            comments: item.Comments
+        });
+    });
+    return Object.values(groups);
+}
 
 const ganttStyle = {
     width: '100%'
@@ -48,15 +81,17 @@ const dependencyModelFields = {
 const getTaskId = getter(taskModelFields.id);
 
 const columns = [
-    { field: taskModelFields.id, title: 'ID', width: 70 },
-    { field: taskModelFields.title, title: 'Title', width: 200, expandable: true },
-    { field: taskModelFields.start, title: 'Start', width: 120, format: '{0:MM/dd/yyyy}' },
-    { field: taskModelFields.end, title: 'End', width: 120, format: '{0:MM/dd/yyyy}' }
+    { field: 'title', title: 'Name', width: 200, expandable: true },
+    { field: 'designation', title: 'Site Position', width: 150 },
+    { field: 'grade', title: 'Grade', width: 100 },
+    { field: 'start', title: 'Start', width: 120, format: '{0:MM/dd/yyyy}' },
+    { field: 'end', title: 'End', width: 120, format: '{0:MM/dd/yyyy}' },
+    { field: 'comments', title: 'Comments', width: 200 }
 ];
 
 const POC = () => {
-    const [taskData] = React.useState(exampleTaskData);
-    const [dependencyData] = React.useState(exampleDependencyData);
+    const [taskData] = React.useState(groupPlansData(data.Data));
+    const [dependencyData] = React.useState([]);
 
     const [expandedState, setExpandedState] = React.useState([7, 11, 12, 13]);
     const [columnsState, setColumnsState] = React.useState<Array<any>>(columns);
