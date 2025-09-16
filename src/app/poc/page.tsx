@@ -84,7 +84,7 @@ const dependencyModelFields = {
 const getTaskId = getter(taskModelFields.id);
 
 const columns = [
-    { field: 'title', title: 'Name', width: 200, expandable: true },
+    { field: 'title', title: 'Name', width: 400, expandable: true },
     { field: 'designation', title: 'Site Position', width: 150 },
     { field: 'grade', title: 'Grade', width: 100 },
     { field: 'start', title: 'Start', width: 120, format: '{0:MM/dd/yyyy}' },
@@ -101,11 +101,6 @@ const POC = () => {
 
     const zonedStart = ZonedDate.fromLocalDate(startDate, 'America/New_York');
     const zonedEnd = ZonedDate.fromLocalDate(endDate, 'America/New_York');
-
-    console.log("Start Date: ", startDate);
-    console.log("Zoned Start Date: ", zonedStart);
-    console.log("End Date: ", endDate);
-    console.log("Zoned End Date: ", zonedEnd);
 
     const [taskData] = React.useState(groupPlansData(data.Data));
     const [dependencyData] = React.useState([]);
@@ -161,6 +156,14 @@ const POC = () => {
             })
         );
     }, [taskData, dataState, expandedState]);
+
+      React.useEffect(() => {
+      console.log("PROCESSED DATA: ", processedData);
+  },[processedData])
+
+  React.useEffect(() => {
+      console.log("Dependency Data: ", dependencyData);
+  },[dependencyData])
 
     return (
         <div>
