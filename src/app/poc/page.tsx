@@ -1,6 +1,7 @@
 "use client"
 import * as React from 'react';
-
+import { ZonedDate } from '@progress/kendo-date-math';
+import '@progress/kendo-date-math/tz/America/New_York';
 import {
     Gantt,
     GanttWeekView,
@@ -18,6 +19,7 @@ import {
     GanttDataStateChangeEvent,
     GanttExpandChangeEvent
 } from '@progress/kendo-react-gantt';
+import '@progress/kendo-date-math/tz/UTC';
 
 import { getter } from '@progress/kendo-react-common';
 import { data } from './shared-plans';
@@ -38,7 +40,7 @@ function groupPlansData(raw: any[]): any[] {
             groups[groupKey] = {
                 id: groupKey,
                 title: groupKey,
-                isExpanded: true,
+                isExpanded: false, // Only UI controls expansion
                 children: []
             };
         }
@@ -47,9 +49,10 @@ function groupPlansData(raw: any[]): any[] {
             title: item.Title,
             designation: item.Designation,
             grade: item.Grade,
-            start: parseMSDate(item.StartDate),
-            end: parseMSDate(item.EndDate),
-            comments: item.Comments
+            start: parseMSDate(item.RenderStartDate), // Use RenderStartDate for timeline
+            end: parseMSDate(item.RenderEndDate),     // Use RenderEndDate for timeline
+            comments: item.Comments,
+            isExpanded: false // Only UI controls expansion
         });
     });
     return Object.values(groups);
@@ -89,11 +92,25 @@ const columns = [
     { field: 'comments', title: 'Comments', width: 200 }
 ];
 
+
 const POC = () => {
+
+    const now = new Date();
+    const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endDate = new Date(now.getFullYear() + 1, now.getMonth(), 0);
+
+    const zonedStart = ZonedDate.fromLocalDate(startDate, 'America/New_York');
+    const zonedEnd = ZonedDate.fromLocalDate(endDate, 'America/New_York');
+
+    console.log("Start Date: ", startDate);
+    console.log("Zoned Start Date: ", zonedStart);
+    console.log("End Date: ", endDate);
+    console.log("Zoned End Date: ", zonedEnd);
+
     const [taskData] = React.useState(groupPlansData(data.Data));
     const [dependencyData] = React.useState([]);
 
-    const [expandedState, setExpandedState] = React.useState([7, 11, 12, 13]);
+    const [expandedState, setExpandedState] = React.useState<number[]>([]);
     const [columnsState, setColumnsState] = React.useState<Array<any>>(columns);
 
     const onColumnResize = React.useCallback(
@@ -120,10 +137,16 @@ const POC = () => {
     const onExpandChange = React.useCallback(
         (event: GanttExpandChangeEvent) => {
             const id = getTaskId(event.dataItem);
-            const newExpandedState = event.value
-                ? expandedState.filter((currentId) => currentId !== id)
-                : [...expandedState, id];
-
+            let newExpandedState;
+            if (!event.value) {
+                // Expanding: add id if not present
+                newExpandedState = [...expandedState, id];
+            } else {
+                // Collapsing: remove id
+                newExpandedState = expandedState.filter((currentId) => currentId !== id);
+            }
+            console.log("NEW Expanded State: ", newExpandedState);
+            console.log("Prev Expanded State: ", expandedState);
             setExpandedState(newExpandedState);
         },
         [expandedState, setExpandedState]
@@ -132,7 +155,6 @@ const POC = () => {
     const processedData = React.useMemo(() => {
         const filteredData = filterBy(taskData, dataState.filter, taskModelFields.children);
         const sortedData = orderBy(filteredData, dataState.sort, taskModelFields.children);
-
         return mapTree(sortedData, taskModelFields.children, (task) =>
             extendDataItem(task, taskModelFields.children, {
                 [taskModelFields.isExpanded]: expandedState.includes(getTaskId(task))
@@ -158,12 +180,17 @@ const POC = () => {
                 onColumnReorder={onColumnReorder}
                 onExpandChange={onExpandChange}
                 onDataStateChange={onDataStateChange}
-                
+                view='year'
+                defaultView='year'
             >
-                <GanttWeekView />
-                <GanttDayView />
-                <GanttMonthView />
-                <GanttYearView />
+                <GanttYearView
+                    dateRange={{
+                        start: startDate,
+                        end: endDate,
+                        zonedStart: zonedStart,
+                        zonedEnd: zonedEnd
+                    }}
+                    />
             </Gantt>
         </div>
     );

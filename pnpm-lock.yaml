@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@progress/kendo-date-math':
+        specifier: ^1.5.15
+        version: 1.5.15
       '@progress/kendo-licensing':
         specifier: ^1.7.1
         version: 1.7.1
