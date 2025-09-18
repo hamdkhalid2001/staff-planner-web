@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "@progress/kendo-theme-fluent/dist/all.scss";
 import "./globals.css";
+import { registerLicense } from "@syncfusion/ej2-base";
+
+registerLicense('Ngo9BigBOggjGyl/Vkd+XU9FcVRDXXxIeUx0RWFcb19yfldPal5YVAciSV9jS3tTf0RkWXlddXRUQGFdV091Xg==');
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
