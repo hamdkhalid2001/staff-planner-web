@@ -105,11 +105,6 @@ function getPrettyEventStyle(designation: string): string {
   // Fallback palette (indigo, emerald, cyan, violet, rose, sky)
   const palette: Array<{ bg: string; border: string; text: string }> = [
     { bg: '#6366f1', border: '#4338ca', text: '#ffffff' }, // indigo
-    { bg: '#10b981', border: '#047857', text: '#ffffff' }, // emerald
-    { bg: '#06b6d4', border: '#0e7490', text: '#ffffff' }, // cyan
-    { bg: '#8b5cf6', border: '#6d28d9', text: '#ffffff' }, // violet
-    { bg: '#f43f5e', border: '#be123c', text: '#ffffff' }, // rose
-    { bg: '#38bdf8', border: '#0284c7', text: '#ffffff' }  // sky
   ];
 
   // Simple deterministic hash to pick a color based on the designation
