@@ -119,6 +119,13 @@ function getPrettyEventStyle(designation: string): string {
   return `background-color:${pick.bg};border-color:${pick.border};color:${pick.text};height:30px;text-align:center;justify-content:center;display:flex;align-items:center;`;
 }
 
+// Generate a deterministic dummy photo URL (DiceBear) from a seed
+function getDummyPhotoUrl(seed: string): string {
+  const s = encodeURIComponent((seed || '').toString());
+  // Adventurer style with soft backgrounds, rounded, fixed size for crispness
+  return `https://api.dicebear.com/9.x/adventurer/svg?seed=${s}&backgroundColor=b6e3f4,c0aede,d1d4f9&radius=50&size=64`;
+}
+
 export default function BryntumSchedulerPage() {
   const now = new Date();
   const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -151,6 +158,9 @@ export default function BryntumSchedulerPage() {
         rowHeight={68}
         barHeight={15}
         selectionMode={{ row: false, cell: false }}
+        subGridConfigs={{
+          locked: { width: 340 }
+        }}
         features={{
           cellMenu: false,
           rowMenu: false,
@@ -169,17 +179,28 @@ export default function BryntumSchedulerPage() {
         columns={[{
           text: 'Employees',
           field: 'name',
-          width: 440,
+          width: 340,
           // Add a class to the left column cells so we can scope padding nicely
           cellCls: 'emp-col-cell',
-          renderer: ({ record }: any) => ({
-            className: 'emp-cell',
-            children: [
-              { tag: 'div', className: 'emp-name', text: record?.name ?? '' },
-              { tag: 'div', className: 'emp-desig', text: record?.designation ?? '—' },
-              { tag: 'div', className: 'emp-grade', text: record?.grade ?? '—' }
-            ]
-          })
+          renderer: ({ record }: any) => {
+            const name = record?.name ?? '';
+            const seed = record?.id || name;
+            const photoUrl = getDummyPhotoUrl(seed);
+
+            return {
+              className: 'emp-cell',
+              children: [
+                { tag: 'div', className: 'emp-avatar', children: [
+                  { tag: 'img', className: 'emp-avatar-img', src: photoUrl, alt: name }
+                ]},
+                { tag: 'div', className: 'emp-meta', children: [
+                  { tag: 'div', className: 'emp-name', text: name },
+                  { tag: 'div', className: 'emp-desig', text: record?.designation ?? '—' },
+                  { tag: 'div', className: 'emp-grade', text: record?.grade ?? '—' }
+                ]}
+              ]
+            };
+          }
         }]}
         // Flat list of users as resources
         resources={resources}
@@ -194,6 +215,44 @@ export default function BryntumSchedulerPage() {
           display: none !important;
         }
 
+        /* Slimmer splitter between left grid and timeline */
+        .b-scheduler .b-grid-splitter,
+        .b-scheduler .b-splitter {
+          width: 6px !important;
+          min-width: 6px !important;
+          background-color: #e5e7eb !important; /* gray-200 */
+          border: none !important;
+        }
+        .b-scheduler .b-grid-splitter .b-splitter-grip,
+        .b-scheduler .b-splitter .b-splitter-grip {
+          display: none !important;
+        }
+
+        /* Slimmer scrollbars (slider) */
+        .b-scheduler ::-webkit-scrollbar,
+        .b-grid ::-webkit-scrollbar {
+          width: 6px;
+          height: 6px;
+        }
+        .b-scheduler ::-webkit-scrollbar-thumb,
+        .b-grid ::-webkit-scrollbar-thumb {
+          background-color: #cbd5e1; /* slate-300 */
+          border-radius: 6px;
+        }
+        .b-scheduler ::-webkit-scrollbar-thumb:hover,
+        .b-grid ::-webkit-scrollbar-thumb:hover {
+          background-color: #94a3b8; /* slate-400 */
+        }
+        .b-scheduler ::-webkit-scrollbar-track,
+        .b-grid ::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .b-scheduler,
+        .b-grid {
+          scrollbar-width: thin; /* Firefox */
+          scrollbar-color: #cbd5e1 transparent; /* Firefox */
+        }
+
         /* Tighter padding only for the left Employees column */
         .b-grid-cell.emp-col-cell {
           padding-top: 10px !important;
@@ -203,30 +262,34 @@ export default function BryntumSchedulerPage() {
           transition: background-color .15s ease;
         }
 
-        /* Custom hover color for left cells */
-        .b-grid-subgrid-locked .b-grid-row:hover .b-grid-cell.emp-col-cell,
-        .b-grid-subgrid-locked .b-grid-cell.emp-col-cell:hover {
-          background-color: #f8fafc !important; /* slate-50 */
-        }
-
-        /* Disable any text selection and selection styling in the left (locked) subgrid */
-        .b-grid-subgrid-locked .b-grid-cell.emp-col-cell,
-        .b-grid-subgrid-locked .b-selected {
-          user-select: none !important;
-          -webkit-user-select: none !important;
-          -moz-user-select: none !important;
-          -ms-user-select: none !important;
-          background: transparent !important;
-        }
-        .b-grid-subgrid-locked .b-grid-row:focus {
-          outline: none !important;
-        }
-
-        /* Stack name / designation / grade with small gaps */
+        /* Avatar + meta layout */
         .emp-cell {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .emp-avatar {
+          width: 28px;
+          height: 28px;
+          border-radius: 9999px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 700;
+          font-size: 12px;
+          line-height: 1;
+          flex-shrink: 0;
+          overflow: hidden; /* clip image to circle */
+          border: 1px solid #e5e7eb; /* neutral border */
+          background-color: #f3f4f6; /* light fallback */
+        }
+        .emp-avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .emp-avatar-initials { letter-spacing: 0.2px; }
+        .emp-meta {
           display: flex;
           flex-direction: column;
           gap: 2px;
+          min-width: 0;
         }
 
         .emp-name {
@@ -234,18 +297,27 @@ export default function BryntumSchedulerPage() {
           font-size: 13px;
           line-height: 1.2;
           color: #111827; /* gray-900 */
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
         .emp-desig {
           font-size: 12px;
           line-height: 1.2;
           color: #4b5563; /* gray-600 */
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
         .emp-grade {
           font-size: 12px;
           line-height: 1.2;
           color: #6b7280; /* gray-500 */
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
         /* Rounded corners for timeline event bars */
