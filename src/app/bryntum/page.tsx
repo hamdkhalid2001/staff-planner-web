@@ -99,7 +99,7 @@ function getPrettyEventStyle(designation: string): string {
   };
   if (special[key]) {
     const s = special[key];
-    return `background-color:${s.bg};border-color:${s.border};color:${s.text};height:30px;`;
+    return `background-color:${s.bg};border-color:${s.border};color:${s.text};`;
   }
 
   // Fallback palette (indigo, emerald, cyan, violet, rose, sky)
@@ -116,7 +116,7 @@ function getPrettyEventStyle(designation: string): string {
   let sum = 0;
   for (let i = 0; i < key.length; i++) sum = (sum + key.charCodeAt(i)) >>> 0;
   const pick = palette[sum % palette.length];
-  return `background-color:${pick.bg};border-color:${pick.border};color:${pick.text};height:30px;text-align:center;justify-content:center;display:flex;align-items:center;`;
+  return `background-color:${pick.bg};border-color:${pick.border};color:${pick.text};`;
 }
 
 // Generate a deterministic dummy photo URL (DiceBear) from a seed
@@ -124,6 +124,85 @@ function getDummyPhotoUrl(seed: string): string {
   const s = encodeURIComponent((seed || '').toString());
   // Adventurer style with soft backgrounds, rounded, fixed size for crispness
   return `https://api.dicebear.com/9.x/adventurer/svg?seed=${s}&backgroundColor=b6e3f4,c0aede,d1d4f9&radius=50&size=64`;
+}
+
+// Compute per-resource available ranges (gaps) between assigned events within the scheduler range
+function computeAvailableRanges(
+  resources: Array<{ id: string }>,
+  events: Array<{ resourceId: string; startDate: Date | null; endDate: Date | null }>,
+  rangeStart: Date,
+  rangeEnd: Date
+) {
+  const byRes = new Map<string, Array<{ start: Date; end: Date }>>();
+
+  // Collect and clamp busy intervals per resource
+  for (const ev of events) {
+    if (!ev.startDate || !ev.endDate) continue;
+    const s = new Date(Math.max(rangeStart.getTime(), ev.startDate.getTime()));
+    const e = new Date(Math.min(rangeEnd.getTime(), ev.endDate.getTime()));
+    if (e <= s) continue;
+    const arr = byRes.get(ev.resourceId) || [];
+    arr.push({ start: s, end: e });
+    byRes.set(ev.resourceId, arr);
+  }
+
+  const ranges: Array<{ id: string; resourceId: string; startDate: Date; endDate: Date; name: string; cls: string; style?: string }> = [];
+
+  // Only consider available gaps strictly greater than 1 week
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+  for (const res of resources) {
+    const intervals = (byRes.get(res.id) || []).sort((a, b) => a.start.getTime() - b.start.getTime());
+
+    // Merge overlaps
+    const merged: Array<{ start: Date; end: Date }> = [];
+    for (const iv of intervals) {
+      const last = merged[merged.length - 1];
+      if (last && iv.start.getTime() <= last.end.getTime()) {
+        if (iv.end.getTime() > last.end.getTime()) last.end = iv.end;
+      } else {
+        merged.push({ start: iv.start, end: iv.end });
+      }
+    }
+
+    // Compute complements as available ranges
+    let cursor = new Date(rangeStart);
+    for (const iv of merged) {
+      if (iv.start.getTime() > cursor.getTime()) {
+        const gapStart = new Date(cursor);
+        const gapEnd = new Date(iv.start);
+        if (gapEnd.getTime() - gapStart.getTime() > WEEK_MS) {
+          ranges.push({
+            id: `avail_${res.id}_${gapStart.getTime()}_${gapEnd.getTime()}`,
+            resourceId: res.id,
+            startDate: gapStart,
+            endDate: gapEnd,
+            name: 'Available',
+            cls: 'available-range',
+            style: 'background-color: rgba(16,185,129,0.18); border: 1px solid rgba(22,163,74,0.35); border-radius: 6px;'
+          });
+        }
+      }
+      if (iv.end.getTime() > cursor.getTime()) cursor = new Date(iv.end);
+    }
+    if (cursor.getTime() < rangeEnd.getTime()) {
+      const gapStart = new Date(cursor);
+      const gapEnd = new Date(rangeEnd);
+      if (gapEnd.getTime() - gapStart.getTime() > WEEK_MS) {
+        ranges.push({
+          id: `avail_${res.id}_${gapStart.getTime()}_${gapEnd.getTime()}`,
+          resourceId: res.id,
+          startDate: gapStart,
+          endDate: gapEnd,
+          name: 'Available',
+          cls: 'available-range',
+          style: 'background-color: rgba(16,185,129,0.18); border: 1px solid rgba(22,163,74,0.35); border-radius: 6px;'
+        });
+      }
+    }
+  }
+
+  return ranges;
 }
 
 export default function BryntumSchedulerPage() {
@@ -134,11 +213,38 @@ export default function BryntumSchedulerPage() {
   const resources = useMemo(() => toFlatUsers((data as any).Data as PlanItem[]), []);
   const events = useMemo(() => toUserEvents((data as any).Data as PlanItem[]), []);
 
-  // Color and label bars for certain designations
+  const availableRanges = useMemo(
+    () => computeAvailableRanges(resources, events as any, startDate, endDate),
+    [resources, events, startDate, endDate]
+  );
+
+  // Build non-interactive "Available" events from the computed gaps
+  const availableEvents = useMemo(() =>
+    availableRanges.map(r => ({
+      id: `av_${r.id}`,
+      resourceId: r.resourceId,
+      name: 'Available',
+      startDate: r.startDate as Date,
+      endDate: r.endDate as Date,
+      available: true,
+      cls: 'available-event',
+      draggable: false,
+      resizable: false
+    })),
+  [availableRanges]);
+
+  const allEvents = useMemo(() => [...(events as any), ...availableEvents], [events, availableEvents]);
+
+  // Color and label bars
   const eventRenderer = ({ eventRecord, renderData }: any) => {
+    const cls = String(eventRecord?.cls || '');
+    const isAvailable = eventRecord?.available === true || /(^|\s)available-event(\s|$)/.test(cls);
+    if (isAvailable) {
+      renderData.style = 'background-color: rgba(16,185,129,0.18); border: 1px solid rgba(22,163,74,0.35); color:#065f46;';
+      return eventRecord?.name || 'Available';
+    }
     const desig = (eventRecord?.designation ?? '').toString();
     renderData.style = getPrettyEventStyle(desig);
-    // Always show a uniform label
     return 'Assigned';
   };
 
@@ -156,7 +262,7 @@ export default function BryntumSchedulerPage() {
         viewPreset="monthAndYear"
         barMargin={15}
         rowHeight={68}
-        barHeight={15}
+        barHeight={30}
         selectionMode={{ row: false, cell: false }}
         subGridConfigs={{
           locked: { width: 340 }
@@ -168,8 +274,13 @@ export default function BryntumSchedulerPage() {
           eventMenu: false,
           scheduleMenu: false,
           timeAxisHeaderMenu: false,
-          eventCopyPaste: false
+          eventCopyPaste: false,
+          eventDrag: false,
+          eventResize: false,
+          eventEdit: false,
+          resourceTimeRanges: false
         }}
+        // resourceTimeRangeStore removed in favor of event-based available bars
         onBeforeCellMenuShow={() => false}
         onBeforeRowMenuShow={() => false}
         onBeforeHeaderMenuShow={() => false}
@@ -204,12 +315,35 @@ export default function BryntumSchedulerPage() {
         }]}
         // Flat list of users as resources
         resources={resources}
-        // No events; we only list users
-        events={events}
+        // Assigned + Available events
+        events={allEvents}
         eventRenderer={eventRenderer}
       />
 
       <style jsx global>{`
+        /* Available as event (non-interactive) */
+        .available-event,
+        .available-event .b-sch-event-content {
+          pointer-events: none !important;
+        }
+        .available-event {
+          background-color: rgba(16, 185, 129, 0.18) !important;
+          border: 1px solid rgba(22, 163, 74, 0.35) !important;
+          color: #065f46 !important;
+          height: 100% !important; /* match wrapper height (barHeight) */
+          box-sizing: border-box;   /* include border in height */
+        }
+        
+        /* Available ranges (kept for reference, unused now) */
+        .b-sch-resourcetimerange.available-range,
+        .available-range {
+          background-color: rgba(16, 185, 129, 0.18) !important; /* emerald-500 @ 18% */
+          border: 1px solid rgba(22, 163, 74, 0.35) !important;   /* emerald-600 */
+          border-radius: 6px;
+          pointer-events: none; /* non-interactive */
+        }
+        .b-sch-resourcetimerange.available-range .b-sch-timerange-label { color: #065f46; font-weight: 600; font-size: 11px; }
+        
         /* As a last resort, hide any Bryntum menu if created */
         .b-menu {
           display: none !important;
