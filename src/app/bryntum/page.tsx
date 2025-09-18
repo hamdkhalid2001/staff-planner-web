@@ -68,6 +68,8 @@ function toUserEvents(raw: PlanItem[]) {
     endDate: Date | null;
     designation?: string;
     grade?: string;
+    projectCode?: string;
+    projectName?: string;
   }> = [];
 
   raw.forEach(item => {
@@ -80,7 +82,9 @@ function toUserEvents(raw: PlanItem[]) {
         startDate: parseMSDate(item.RenderStartDate),
         endDate: parseMSDate(item.RenderEndDate),
         designation: item.Designation,
-        grade: item.Grade
+        grade: item.Grade,
+        projectCode: item.ProjectCode,
+        projectName: item.ProjectName
       });
     }
   });
@@ -319,7 +323,6 @@ export default function BryntumSchedulerPage() {
           id: `${ev.id}_part_${p.start.getTime()}_${p.end.getTime()}_${idx}`,
           startDate: p.start,
           endDate: p.end,
-          // explicitly not a conflict
           conflict: false,
           cls: (ev.cls || '').replace(/\bconflict-event\b/g, '').trim()
         });
@@ -328,36 +331,9 @@ export default function BryntumSchedulerPage() {
     return out;
   }, [baseAssignedEvents, conflictSegmentsByRes]);
 
-  // Use split assigned + conflicts to compute availability
-  const busyForAvailability = useMemo(
-    () => [...splitAssignedEvents, ...conflictEvents],
-    [splitAssignedEvents, conflictEvents]
-  );
-
-  const availableRanges = useMemo(
-    () => computeAvailableRanges(resources, busyForAvailability as any, startDate, endDate),
-    [resources, busyForAvailability, startDate, endDate]
-  );
-
-  // Build non-interactive "Available" events from the computed gaps
-  const availableEvents = useMemo(() =>
-    availableRanges.map(r => ({
-      id: `av_${r.id}`,
-      resourceId: r.resourceId,
-      name: 'Available',
-      startDate: r.startDate as Date,
-      endDate: r.endDate as Date,
-      available: true,
-      cls: 'available-event',
-      draggable: false,
-      resizable: false
-    })),
-  [availableRanges]);
-
-  // POC: add a single Leave bar for the first resource
+  // POC leave events (can be replaced with data-driven leaves later)
   const leaveEvents = useMemo(() => {
     if (!resources.length) return [] as any[];
-    const DAY_MS = 24 * 60 * 60 * 1000;
 
     // Try to find the specific employee id from sample (96348). Fallback to the first resource.
     const target = resources.find(r => String(r.id) === '96348') || resources[0];
@@ -387,36 +363,152 @@ export default function BryntumSchedulerPage() {
     }] as any[];
   }, [resources, startDate, endDate]);
 
-  const allEvents = useMemo(
-    () => [...(splitAssignedEvents as any), ...conflictEvents, ...availableEvents, ...leaveEvents],
-    [splitAssignedEvents, conflictEvents, availableEvents, leaveEvents]
+  // Split assigned events by subtracting leave segments per resource
+  const finalAssignedEvents = useMemo(() => {
+    // Build segments by resource from leaveEvents
+    const leaveSegsByRes = new Map<string, Array<{ start: Date; end: Date }>>();
+    for (const le of leaveEvents as any[]) {
+      if (!le.startDate || !le.endDate) continue;
+      const arr = leaveSegsByRes.get(le.resourceId) || [];
+      arr.push({ start: le.startDate, end: le.endDate });
+      leaveSegsByRes.set(le.resourceId, arr);
+    }
+
+    const out: any[] = [];
+    for (const ev of splitAssignedEvents as any[]) {
+      if (!ev.startDate || !ev.endDate) continue;
+      const segs = leaveSegsByRes.get(ev.resourceId) || [];
+      if (!segs.length) {
+        out.push(ev);
+        continue;
+      }
+      const parts = subtractSegmentsFromInterval(ev.startDate, ev.endDate, segs);
+      parts.forEach((p, idx) => {
+        out.push({
+          ...ev,
+          id: `${ev.id}_lvpart_${p.start.getTime()}_${p.end.getTime()}_${idx}`,
+          startDate: p.start,
+          endDate: p.end
+        });
+      });
+    }
+    return out;
+  }, [splitAssignedEvents, leaveEvents]);
+
+  // Use final assigned + conflicts + leaves to compute availability
+  const busyForAvailability = useMemo(
+    () => [...finalAssignedEvents, ...conflictEvents, ...leaveEvents],
+    [finalAssignedEvents, conflictEvents, leaveEvents]
   );
 
-  // Color and label bars. Conflict is separate event now.
+  const availableRanges = useMemo(
+    () => computeAvailableRanges(resources, busyForAvailability as any, startDate, endDate),
+    [resources, busyForAvailability, startDate, endDate]
+  );
+
+  // Build non-interactive "Available" events from the computed gaps
+  const availableEvents = useMemo(() =>
+    availableRanges.map(r => ({
+      id: `av_${r.id}`,
+      resourceId: r.resourceId,
+      name: 'Available',
+      startDate: r.startDate as Date,
+      endDate: r.endDate as Date,
+      available: true,
+      cls: 'available-event',
+      draggable: false,
+      resizable: false
+    })),
+  [availableRanges]);
+
+  // Build Project Info events paired under each final assigned event
+  const projectInfoEvents = useMemo(() => {
+    const out: any[] = [];
+    for (const ev of finalAssignedEvents as any[]) {
+      const code = (ev.projectCode || '').toString().trim();
+      const name = (ev.projectName || '').toString().trim();
+      const label = code && name ? `${code} | ${name}` : (code || name);
+      if (!label) continue; // skip if no project info
+      out.push({
+        id: `proj_${ev.id}`,
+        resourceId: ev.resourceId,
+        name: label,
+        startDate: ev.startDate,
+        endDate: ev.endDate,
+        projectInfo: true,
+        cls: 'project-info-event',
+        draggable: false,
+        resizable: false
+      });
+    }
+    return out;
+  }, [finalAssignedEvents]);
+
+  const allEvents = useMemo(
+    () => [
+      ...(finalAssignedEvents as any),
+      ...projectInfoEvents,
+      ...conflictEvents,
+      ...availableEvents,
+      ...leaveEvents
+    ],
+    [finalAssignedEvents, projectInfoEvents, conflictEvents, availableEvents, leaveEvents]
+  );
+
+  // Lane layout constants
+  const ASSIGNED_TOP = 10;       // px
+  const ASSIGNED_HEIGHT = 24;    // px
+  const PROJ_GAP = 8;            // px
+  const PROJ_TOP = ASSIGNED_TOP + ASSIGNED_HEIGHT + PROJ_GAP;
+  const PROJ_HEIGHT = 18;        // px
+
+  // Color and label bars. Conflict/Leave/Available are standalone events.
   const eventRenderer = ({ eventRecord, renderData }: any) => {
     const cls = String(eventRecord?.cls || '');
+
+    // Default size for assigned lane
+    let top = ASSIGNED_TOP;
+    let height = ASSIGNED_HEIGHT;
+
+    const isProjectInfo = eventRecord?.projectInfo === true || /(^|\s)project-info-event(\s|$)/.test(cls);
+    if (isProjectInfo) {
+      top = PROJ_TOP;
+      height = PROJ_HEIGHT;
+      renderData.style = 'background-color:#f3f4f6; border:1px solid #e5e7eb; color:#374151; font-size:11px;';
+      renderData.top = top;
+      renderData.height = height;
+      return eventRecord?.name;
+    }
 
     const isLeave = eventRecord?.leave === true || /(^|\s)leave-event(\s|$)/.test(cls);
     if (isLeave) {
       renderData.style = 'background-color:#f59e0b; border: 1px solid #b45309; color:#ffffff; text-shadow:0 1px 1px rgba(0,0,0,0.35);';
+      renderData.top = top;
+      renderData.height = height;
       return eventRecord?.name || 'Leave';
     }
 
     const isAvailable = eventRecord?.available === true || /(^|\s)available-event(\s|$)/.test(cls);
     if (isAvailable) {
       renderData.style = 'background-color: rgba(16,185,129,0.18); border: 1px solid rgba(22,163,74,0.35); color:#065f46;';
+      renderData.top = top;
+      renderData.height = height;
       return eventRecord?.name || 'Available';
     }
 
     const isConflict = eventRecord?.conflict === true || /(^|\s)conflict-event(\s|$)/.test(cls);
     if (isConflict) {
       renderData.style = 'background-image: repeating-linear-gradient(45deg, rgba(239,68,68,0.95) 0 10px, rgba(220,38,38,0.95) 10px 20px); color:#ffffff; text-shadow:0 1px 1px rgba(0,0,0,0.35);';
+      renderData.top = top;
+      renderData.height = height;
       return 'Conflict';
     }
 
     // Assigned event
     const desig = (eventRecord?.designation ?? '').toString();
     renderData.style = getPrettyEventStyle(desig);
+    renderData.top = top;
+    renderData.height = height;
     return 'Assigned';
   };
 
@@ -435,7 +527,6 @@ export default function BryntumSchedulerPage() {
         barMargin={15}
         rowHeight={68}
         barHeight={30}
-        eventLayout="overlap"
         selectionMode={{ row: false, cell: false }}
         subGridConfigs={{
           locked: { width: 340 }
@@ -453,6 +544,8 @@ export default function BryntumSchedulerPage() {
           eventEdit: false,
           resourceTimeRanges: false
         }}
+        // Manual layout so we can pair Assigned + Project Info bars
+        eventLayout="none"
         // resourceTimeRangeStore removed in favor of event-based available bars
         onBeforeCellMenuShow={() => false}
         onBeforeRowMenuShow={() => false}
@@ -488,7 +581,7 @@ export default function BryntumSchedulerPage() {
         }]}
         // Flat list of users as resources
         resources={resources}
-        // Assigned + Conflict + Available + Leave events
+        // Assigned + Project Info + Conflict + Available + Leave events
         events={allEvents}
         eventRenderer={eventRenderer}
       />
@@ -503,7 +596,7 @@ export default function BryntumSchedulerPage() {
           background-color: rgba(16, 185, 129, 0.18) !important;
           border: 1px solid rgba(22, 163, 74, 0.35) !important;
           color: #065f46 !important;
-          height: 100% !important; /* match wrapper height (barHeight) */
+          /* Height controlled by renderer lanes */
           box-sizing: border-box;   /* include border in height */
         }
         
@@ -654,7 +747,7 @@ export default function BryntumSchedulerPage() {
             margin: 0;
         }
 
-        /* Leave event style (POC) */
+        /* Leave event style (non-interactive) */
         .leave-event,
         .leave-event .b-sch-event-content {
           pointer-events: none !important;
@@ -662,10 +755,9 @@ export default function BryntumSchedulerPage() {
         .leave-event {
           background-color: #f59e0b !important; /* amber-500 for readability */
           border: none;
-          border-radius: none !important;
           color: #ffffff !important;            /* white text */
           text-shadow: 0 1px 1px rgba(0,0,0,0.35); /* improve contrast */
-          height: 100% !important;
+          /* Height controlled by renderer lanes */
           box-sizing: border-box;
         }
 
