@@ -1,5 +1,5 @@
 "use client";
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 // Bryntum styles (requires @bryntum/scheduler to be installed)
 import '@bryntum/scheduler/scheduler.stockholm.css';
@@ -282,6 +282,9 @@ export default function BryntumSchedulerPage() {
   const resources = useMemo(() => toFlatUsers((data as any).Data as PlanItem[]), []);
   const baseAssignedEvents = useMemo(() => toUserEvents((data as any).Data as PlanItem[]), []);
 
+  // Keep ref to Scheduler instance for zoom/scroll actions
+  const schedulerRef = useRef<any>(null);
+
   // Compute conflict segments per resource based on base assigned events
   const conflictSegmentsByRes = useMemo(
     () => computeConflictSegmentsByResource(baseAssignedEvents as any),
@@ -457,7 +460,7 @@ export default function BryntumSchedulerPage() {
 
   // Lane layout constants
   const ASSIGNED_TOP = 10;       // px
-  const ASSIGNED_HEIGHT = 36;    // px
+  const ASSIGNED_HEIGHT = 28;    // px
   const PROJ_GAP = 8;            // px
   const PROJ_TOP = ASSIGNED_TOP + ASSIGNED_HEIGHT + PROJ_GAP;
   const PROJ_HEIGHT = 18;        // px
@@ -465,18 +468,24 @@ export default function BryntumSchedulerPage() {
   // Color and label bars. Conflict/Leave/Available are standalone events.
   const eventRenderer = ({ eventRecord, renderData }: any) => {
     const cls = String(eventRecord?.cls || '');
-
+    const desig = (eventRecord?.designation ?? '').toString();
     // Default size for assigned lane
     let top = ASSIGNED_TOP;
     let height = ASSIGNED_HEIGHT;
+
+    // Mark very short events for visibility accents
+    const s: Date | undefined = eventRecord?.startDate;
+    const e: Date | undefined = eventRecord?.endDate;
+    const isTiny = s && e ? ((e.getTime() - s.getTime()) / (24 * 60 * 60 * 1000)) <= 4 : false;
 
     const isProjectInfo = eventRecord?.projectInfo === true || /(^|\s)project-info-event(\s|$)/.test(cls);
     if (isProjectInfo) {
       top = PROJ_TOP;
       height = PROJ_HEIGHT;
-      renderData.style = 'background-color:#f3f4f6; border:1px solid #e5e7eb; color:#374151; font-size:11px;';
+      renderData.style = getPrettyEventStyle(desig);
       renderData.top = top;
       renderData.height = height;
+      if (isTiny) renderData.cls = ((renderData.cls || '') + ' tiny-event').trim();
       return eventRecord?.name;
     }
 
@@ -485,6 +494,7 @@ export default function BryntumSchedulerPage() {
       renderData.style = 'background-color:#f59e0b; border: 1px solid #b45309; color:#ffffff; text-shadow:0 1px 1px rgba(0,0,0,0.35);';
       renderData.top = top;
       renderData.height = height;
+      if (isTiny) renderData.cls = ((renderData.cls || '') + ' tiny-event').trim();
       return eventRecord?.name || 'Leave';
     }
 
@@ -493,6 +503,7 @@ export default function BryntumSchedulerPage() {
       renderData.style = 'background-color: rgba(16,185,129,0.18); border: 1px solid rgba(22,163,74,0.35); color:#065f46;';
       renderData.top = top;
       renderData.height = height;
+      if (isTiny) renderData.cls = ((renderData.cls || '') + ' tiny-event').trim();
       return eventRecord?.name || 'Available';
     }
 
@@ -501,15 +512,57 @@ export default function BryntumSchedulerPage() {
       renderData.style = 'background-image: repeating-linear-gradient(45deg, rgba(239,68,68,0.95) 0 10px, rgba(220,38,38,0.95) 10px 20px); color:#ffffff; text-shadow:0 1px 1px rgba(0,0,0,0.35);';
       renderData.top = top;
       renderData.height = height;
+      if (isTiny) renderData.cls = ((renderData.cls || '') + ' tiny-event').trim();
       return 'Conflict';
     }
 
     // Assigned event
-    const desig = (eventRecord?.designation ?? '').toString();
     renderData.style = getPrettyEventStyle(desig);
     renderData.top = top;
     renderData.height = height;
+    if (isTiny) renderData.cls = ((renderData.cls || '') + ' tiny-event').trim();
     return 'Assigned';
+  };
+
+  // Log event details on click and optionally zoom to short events
+  const onEventClick = ({ eventRecord, resourceRecord }: any) => {
+    try {
+      const details = {
+        id: eventRecord?.id,
+        type: eventRecord?.projectInfo ? 'Project Info' : (eventRecord?.available ? 'Available' : (eventRecord?.leave ? 'Leave' : (eventRecord?.conflict ? 'Conflict' : 'Assigned'))),
+        name: eventRecord?.name,
+        resource: resourceRecord?.name,
+        resourceId: resourceRecord?.id,
+        projectCode: eventRecord?.projectCode,
+        projectName: eventRecord?.projectName,
+        startDate: eventRecord?.startDate,
+        endDate: eventRecord?.endDate
+      };
+      // eslint-disable-next-line no-console
+      console.log('Scheduler Event Click:', details);
+
+      const start = eventRecord?.startDate as Date | undefined;
+      const end = eventRecord?.endDate as Date | undefined;
+      if (start && end) {
+        const durationDays = (end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000);
+        if (durationDays <= 4) {
+          const padMs = 1 * 24 * 60 * 60 * 1000; // 1 day padding on each side
+          const s = new Date(start.getTime() - padMs);
+          const e = new Date(end.getTime() + padMs);
+          const inst = schedulerRef.current?.instance;
+          // Prefer setTimeSpan if available; otherwise try timeAxis.
+          if (inst?.setTimeSpan) inst.setTimeSpan(s, e);
+          else if (inst?.timeAxis) {
+            inst.timeAxis.setTimeSpan(s, e);
+          }
+          // Ensure event is visible
+          if (inst?.scrollEventIntoView) inst.scrollEventIntoView(eventRecord, { animate: true, highlight: true });
+        }
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('onEventClick handler error', err);
+    }
   };
 
   return (
@@ -521,9 +574,11 @@ export default function BryntumSchedulerPage() {
            }
          }}>
       <BryntumScheduler
+        ref={schedulerRef}
         startDate={startDate}
         endDate={endDate}
         viewPreset="monthAndYear"
+        tickWidth={72}
         barMargin={15}
         rowHeight={68}
         barHeight={56}
@@ -542,7 +597,25 @@ export default function BryntumSchedulerPage() {
           eventDrag: false,
           eventResize: false,
           eventEdit: false,
-          resourceTimeRanges: false
+          resourceTimeRanges: false,
+          eventTooltip: {
+            template: ({ eventRecord, resourceRecord }: any) => {
+              const type = eventRecord?.projectInfo ? 'Project Info' : (eventRecord?.available ? 'Available' : (eventRecord?.leave ? 'Leave' : (eventRecord?.conflict ? 'Conflict' : 'Assigned')));
+              const code = eventRecord?.projectCode || '';
+              const name = eventRecord?.projectName || '';
+              const start = eventRecord?.startDate ? new Date(eventRecord.startDate).toLocaleDateString() : '';
+              const end = eventRecord?.endDate ? new Date(eventRecord.endDate).toLocaleDateString() : '';
+              const res = resourceRecord?.name || '';
+              const info = (code && name) ? `${code} | ${name}` : (code || name);
+              return `
+                <div style="padding:8px 10px;min-width:220px;line-height:1.35">
+                  <div style="font-weight:600;color:#111827;margin-bottom:4px">${type}${info ? ` — ${info}` : ''}</div>
+                  <div style="color:#374151">${res}</div>
+                  <div style="color:#4b5563;font-size:12px;margin-top:4px">${start} → ${end}</div>
+                </div>
+              `;
+            }
+          }
         }}
         // Manual layout so we can pair Assigned + Project Info bars
         eventLayout="none"
@@ -553,6 +626,7 @@ export default function BryntumSchedulerPage() {
         onBeforeEventMenuShow={() => false}
         onBeforeScheduleMenuShow={() => false}
         onBeforeTimeAxisHeaderMenuShow={() => false}
+        onEventClick={onEventClick}
         columns={[{
           text: 'Employees',
           field: 'name',
@@ -587,10 +661,11 @@ export default function BryntumSchedulerPage() {
       />
 
       <style jsx global>{`
-        /* Available as event (non-interactive) */
+        /* Available as event (clickable) */
         .available-event,
         .available-event .b-sch-event-content {
-          pointer-events: none !important;
+          pointer-events: auto !important; /* allow clicks */
+          cursor: pointer;
         }
         .available-event {
           background-color: rgba(16, 185, 129, 0.18) !important;
@@ -736,7 +811,10 @@ export default function BryntumSchedulerPage() {
           display: flex;
           align-items: center;
           justify-content: center;
+          min-width: 16px; /* ensure tiny events remain visible */
+          transition: filter .15s ease;
         }
+        .b-sch-event:hover { filter: brightness(0.97); }
         .b-sch-event .b-sch-event-content,
         .b-sch-event .b-sch-event-label {
           width: 100%;
@@ -747,10 +825,17 @@ export default function BryntumSchedulerPage() {
             margin: 0;
         }
 
-        /* Leave event style (non-interactive) */
+        /* Visual accent for very short events */
+        .tiny-event {
+          outline: 2px solid rgba(0,0,0,0.08);
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35);
+        }
+
+        /* Leave event style (clickable) */
         .leave-event,
         .leave-event .b-sch-event-content {
-          pointer-events: none !important;
+          pointer-events: auto !important; /* allow clicks */
+          cursor: pointer;
         }
         .leave-event {
           background-color: #f59e0b !important; /* amber-500 for readability */
