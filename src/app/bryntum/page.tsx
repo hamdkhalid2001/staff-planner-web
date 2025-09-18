@@ -95,7 +95,7 @@ function getPrettyEventStyle(designation: string): string {
   // Special mappings for known roles
   const special: Record<string, { bg: string; border: string; text: string }> = {
     'stores clerk': { bg: '#0ea5a1', border: '#0f766e', text: '#ffffff' }, // teal
-    'quantity surveyor': { bg: '#f59e0b', border: '#d97706', text: '#ffffff' } // amber
+    'quantity surveyor': { bg: '#6366f1', border: '#d97706', text: '#ffffff' } // amber
   };
   if (special[key]) {
     const s = special[key];
@@ -233,16 +233,57 @@ export default function BryntumSchedulerPage() {
     })),
   [availableRanges]);
 
-  const allEvents = useMemo(() => [...(events as any), ...availableEvents], [events, availableEvents]);
+  // POC: add a single Leave bar for the first resource
+  const leaveEvents = useMemo(() => {
+    if (!resources.length) return [] as any[];
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    // Try to find the specific employee id from sample (96348). Fallback to the first resource.
+    const target = resources.find(r => String(r.id) === '96348') || resources[0];
+
+    // Show a clear 2-month leave window within the current scheduler range for visibility
+    const leaveStart = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 1); // first day of next month
+    const leaveEnd = new Date(startDate.getFullYear(), startDate.getMonth() + 3, 0);   // last day of the month after next
+    leaveStart.setHours(0, 0, 0, 0);
+    leaveEnd.setHours(23, 59, 59, 999);
+
+    // Clamp to the scheduler visible range just in case
+    const s = new Date(Math.max(startDate.getTime(), leaveStart.getTime()));
+    const e = new Date(Math.min(endDate.getTime(), leaveEnd.getTime()));
+
+    if (e <= s) return [] as any[];
+
+    return [{
+      id: `leave_${target.id}_${s.getTime()}`,
+      resourceId: target.id,
+      name: 'Leave',
+      startDate: s,
+      endDate: e,
+      leave: true,
+      cls: 'leave-event',
+      draggable: false,
+      resizable: false
+    }] as any[];
+  }, [resources, startDate, endDate]);
+
+  const allEvents = useMemo(() => [...(events as any), ...availableEvents, ...leaveEvents], [events, availableEvents, leaveEvents]);
 
   // Color and label bars
   const eventRenderer = ({ eventRecord, renderData }: any) => {
     const cls = String(eventRecord?.cls || '');
+
+    const isLeave = eventRecord?.leave === true || /(^|\s)leave-event(\s|$)/.test(cls);
+    if (isLeave) {
+      renderData.style = 'background-color:#f59e0b; border: none; border-radius: none; color:#ffffff; text-shadow:0 1px 1px rgba(0,0,0,0.35);';
+      return eventRecord?.name || 'Leave';
+    }
+
     const isAvailable = eventRecord?.available === true || /(^|\s)available-event(\s|$)/.test(cls);
     if (isAvailable) {
       renderData.style = 'background-color: rgba(16,185,129,0.18); border: 1px solid rgba(22,163,74,0.35); color:#065f46;';
       return eventRecord?.name || 'Available';
     }
+
     const desig = (eventRecord?.designation ?? '').toString();
     renderData.style = getPrettyEventStyle(desig);
     return 'Assigned';
@@ -263,6 +304,7 @@ export default function BryntumSchedulerPage() {
         barMargin={15}
         rowHeight={68}
         barHeight={30}
+        eventLayout="overlap"
         selectionMode={{ row: false, cell: false }}
         subGridConfigs={{
           locked: { width: 340 }
@@ -479,6 +521,21 @@ export default function BryntumSchedulerPage() {
         .b-sch-event:not(.b-milestone) .b-sch-event-content {
             justify-content: center;
             margin: 0;
+        }
+
+        /* Leave event style (POC) */
+        .leave-event,
+        .leave-event .b-sch-event-content {
+          pointer-events: none !important;
+        }
+        .leave-event {
+          background-color: #f59e0b !important; /* amber-500 for readability */
+          border: none;
+          border-radius: none !important;
+          color: #ffffff !important;            /* white text */
+          text-shadow: 0 1px 1px rgba(0,0,0,0.35); /* improve contrast */
+          height: 100% !important;
+          box-sizing: border-box;
         }
       `}</style>
     </div>
