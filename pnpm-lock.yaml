@@ -68,6 +68,9 @@ importers:
       '@syncfusion/ej2-react-gantt':
         specifier: ^31.1.20
         version: 31.1.20
+      '@syncfusion/ej2-react-schedule':
+        specifier: ^31.1.20
+        version: 31.1.20
       '@syncfusion/ej2-splitbuttons':
         specifier: ^31.1.17
         version: 31.1.17
@@ -950,8 +953,14 @@ packages:
   '@syncfusion/ej2-react-gantt@31.1.20':
     resolution: {integrity: sha512-9nVkWQaf4DGmhTqtHV8lJoukUlsDmgRMt5GuCgsSue0b+6Xg1MEpD236o3aTSsUZbzYa68iz2Aqo1Me3a7YHmw==}
 
+  '@syncfusion/ej2-react-schedule@31.1.20':
+    resolution: {integrity: sha512-Zwbw0aiKShQbLXjEfEvoxvfYad08FNIjmeSkuepdF+BjEBVa0HluA6m4trwyn22DFf56AAfrcVvxdUdrYeNEpQ==}
+
   '@syncfusion/ej2-richtexteditor@31.1.20':
     resolution: {integrity: sha512-4rpsNbm7EsYM0lSkF94KS4ln3tNbqA1mwjpwp3/VRRZsLo8pnqmrGgw4l34v+WD/uk6FDIbfcrGhnwdIJvJ9SA==}
+
+  '@syncfusion/ej2-schedule@31.1.20':
+    resolution: {integrity: sha512-UVrmlURVbnnQ2bx0EitAXlFkrz2rVgI0knXw0hd0QB+lw904TbHDxJ/Q2yEDHhIQjP6JaDVY4GClKRNp5fwTeg==}
 
   '@syncfusion/ej2-splitbuttons@31.1.17':
     resolution: {integrity: sha512-8XA9t2wVtSonGnpblqS3FgEoS8sYy6GOh3p99gDKyPI55UYwUcvuHsBaTA/+w4tGwZ5wiNQMKXWaanHXIGvovw==}
@@ -3454,6 +3463,12 @@ snapshots:
       '@syncfusion/ej2-gantt': 31.1.20
       '@syncfusion/ej2-react-base': 31.1.17
 
+  '@syncfusion/ej2-react-schedule@31.1.20':
+    dependencies:
+      '@syncfusion/ej2-base': 31.1.20
+      '@syncfusion/ej2-react-base': 31.1.17
+      '@syncfusion/ej2-schedule': 31.1.20
+
   '@syncfusion/ej2-richtexteditor@31.1.20':
     dependencies:
       '@syncfusion/ej2-base': 31.1.20
@@ -3464,6 +3479,19 @@ snapshots:
       '@syncfusion/ej2-navigations': 31.1.20
       '@syncfusion/ej2-popups': 31.1.20
       '@syncfusion/ej2-splitbuttons': 31.1.17
+
+  '@syncfusion/ej2-schedule@31.1.20':
+    dependencies:
+      '@syncfusion/ej2-base': 31.1.20
+      '@syncfusion/ej2-buttons': 31.1.17
+      '@syncfusion/ej2-calendars': 31.1.20
+      '@syncfusion/ej2-data': 31.1.17
+      '@syncfusion/ej2-dropdowns': 31.1.20
+      '@syncfusion/ej2-excel-export': 31.1.17
+      '@syncfusion/ej2-inputs': 31.1.20
+      '@syncfusion/ej2-lists': 31.1.17
+      '@syncfusion/ej2-navigations': 31.1.20
+      '@syncfusion/ej2-popups': 31.1.20
 
   '@syncfusion/ej2-splitbuttons@31.1.17':
     dependencies:

@@ -29,6 +29,7 @@
     "@syncfusion/ej2-popups": "^31.1.20",
     "@syncfusion/ej2-react-base": "^31.1.17",
     "@syncfusion/ej2-react-gantt": "^31.1.20",
+    "@syncfusion/ej2-react-schedule": "^31.1.20",
     "@syncfusion/ej2-splitbuttons": "^31.1.17",
     "@syncfusion/ej2-treegrid": "^31.1.20",
     "next": "15.5.2",
