@@ -457,7 +457,7 @@ export default function BryntumSchedulerPage() {
 
   // Lane layout constants
   const ASSIGNED_TOP = 10;       // px
-  const ASSIGNED_HEIGHT = 24;    // px
+  const ASSIGNED_HEIGHT = 36;    // px
   const PROJ_GAP = 8;            // px
   const PROJ_TOP = ASSIGNED_TOP + ASSIGNED_HEIGHT + PROJ_GAP;
   const PROJ_HEIGHT = 18;        // px
@@ -526,7 +526,7 @@ export default function BryntumSchedulerPage() {
         viewPreset="monthAndYear"
         barMargin={15}
         rowHeight={68}
-        barHeight={30}
+        barHeight={56}
         selectionMode={{ row: false, cell: false }}
         subGridConfigs={{
           locked: { width: 340 }
