@@ -205,17 +205,143 @@ function computeAvailableRanges(
   return ranges;
 }
 
+// Compute conflict union segments per resource where active assignments >= 2
+function computeConflictSegmentsByResource(events: Array<{ id: string; resourceId: string; startDate: Date | null; endDate: Date | null }>) {
+  const map = new Map<string, Array<{ start: Date; end: Date }>>();
+  const byRes = new Map<string, Array<{ start: Date; end: Date }>>();
+
+  for (const ev of events) {
+    if (!ev.startDate || !ev.endDate) continue;
+    const arr = byRes.get(ev.resourceId) || [];
+    arr.push({ start: ev.startDate, end: ev.endDate });
+    byRes.set(ev.resourceId, arr);
+  }
+
+  for (const [resId, list] of byRes) {
+    const points: Array<{ t: number; d: number }> = [];
+    for (const iv of list) {
+      points.push({ t: iv.start.getTime(), d: +1 });
+      points.push({ t: iv.end.getTime(), d: -1 });
+    }
+    points.sort((a, b) => a.t === b.t ? b.d - a.d : a.t - b.t); // starts (+1) before ends (-1) on same time
+
+    let count = 0;
+    let segStart: number | null = null;
+    const segments: Array<{ start: Date; end: Date }> = [];
+
+    for (const p of points) {
+      const prev = count;
+      count += p.d;
+      if (prev < 2 && count >= 2) {
+        segStart = p.t;
+      } else if (prev >= 2 && count < 2) {
+        if (segStart !== null && p.t > segStart) {
+          segments.push({ start: new Date(segStart), end: new Date(p.t) });
+        }
+        segStart = null;
+      }
+    }
+
+    map.set(resId, segments);
+  }
+
+  return map;
+}
+
+// Subtract a list of [start,end) segments from one interval
+function subtractSegmentsFromInterval(baseStart: Date, baseEnd: Date, segments: Array<{ start: Date; end: Date }>) {
+  const es = baseStart.getTime();
+  const ee = baseEnd.getTime();
+  const sorted = [...segments]
+    .filter(s => s.end.getTime() > es && s.start.getTime() < ee)
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+  const result: Array<{ start: Date; end: Date }> = [];
+  let cursor = es;
+
+  for (const seg of sorted) {
+    const ss = Math.max(es, seg.start.getTime());
+    const se = Math.min(ee, seg.end.getTime());
+    if (se <= ss) continue;
+    if (ss > cursor) {
+      result.push({ start: new Date(cursor), end: new Date(ss) });
+    }
+    cursor = Math.max(cursor, se);
+  }
+  if (cursor < ee) {
+    result.push({ start: new Date(cursor), end: new Date(ee) });
+  }
+
+  return result;
+}
+
 export default function BryntumSchedulerPage() {
   const now = new Date();
   const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
   const endDate = new Date(now.getFullYear() + 1, now.getMonth(), 1);
 
   const resources = useMemo(() => toFlatUsers((data as any).Data as PlanItem[]), []);
-  const events = useMemo(() => toUserEvents((data as any).Data as PlanItem[]), []);
+  const baseAssignedEvents = useMemo(() => toUserEvents((data as any).Data as PlanItem[]), []);
+
+  // Compute conflict segments per resource based on base assigned events
+  const conflictSegmentsByRes = useMemo(
+    () => computeConflictSegmentsByResource(baseAssignedEvents as any),
+    [baseAssignedEvents]
+  );
+
+  // Build standalone Conflict events per resource from conflict segments
+  const conflictEvents = useMemo(() => {
+    const out: any[] = [];
+    for (const [resId, segs] of conflictSegmentsByRes) {
+      segs.forEach((seg, idx) => {
+        out.push({
+          id: `conf_${resId}_${seg.start.getTime()}_${seg.end.getTime()}_${idx}`,
+          resourceId: resId,
+          name: 'Conflict',
+          startDate: seg.start,
+          endDate: seg.end,
+          conflict: true,
+          cls: 'conflict-event',
+          draggable: false,
+          resizable: false
+        });
+      });
+    }
+    return out;
+  }, [conflictSegmentsByRes]);
+
+  // Split assigned events by subtracting conflict segments per resource
+  const splitAssignedEvents = useMemo(() => {
+    const out: any[] = [];
+    for (const ev of baseAssignedEvents as any[]) {
+      if (!ev.startDate || !ev.endDate) continue;
+      const segs = conflictSegmentsByRes.get(ev.resourceId) || [];
+      const parts = subtractSegmentsFromInterval(ev.startDate, ev.endDate, segs);
+      if (!parts.length) continue; // fully overlapped -> represented as conflicts only
+      parts.forEach((p, idx) => {
+        out.push({
+          ...ev,
+          id: `${ev.id}_part_${p.start.getTime()}_${p.end.getTime()}_${idx}`,
+          startDate: p.start,
+          endDate: p.end,
+          // explicitly not a conflict
+          conflict: false,
+          cls: (ev.cls || '').replace(/\bconflict-event\b/g, '').trim()
+        });
+      });
+    }
+    return out;
+  }, [baseAssignedEvents, conflictSegmentsByRes]);
+
+  // Use split assigned + conflicts to compute availability
+  const busyForAvailability = useMemo(
+    () => [...splitAssignedEvents, ...conflictEvents],
+    [splitAssignedEvents, conflictEvents]
+  );
 
   const availableRanges = useMemo(
-    () => computeAvailableRanges(resources, events as any, startDate, endDate),
-    [resources, events, startDate, endDate]
+    () => computeAvailableRanges(resources, busyForAvailability as any, startDate, endDate),
+    [resources, busyForAvailability, startDate, endDate]
   );
 
   // Build non-interactive "Available" events from the computed gaps
@@ -266,15 +392,18 @@ export default function BryntumSchedulerPage() {
     }] as any[];
   }, [resources, startDate, endDate]);
 
-  const allEvents = useMemo(() => [...(events as any), ...availableEvents, ...leaveEvents], [events, availableEvents, leaveEvents]);
+  const allEvents = useMemo(
+    () => [...(splitAssignedEvents as any), ...conflictEvents, ...availableEvents, ...leaveEvents],
+    [splitAssignedEvents, conflictEvents, availableEvents, leaveEvents]
+  );
 
-  // Color and label bars
+  // Color and label bars. Conflict is separate event now.
   const eventRenderer = ({ eventRecord, renderData }: any) => {
     const cls = String(eventRecord?.cls || '');
 
     const isLeave = eventRecord?.leave === true || /(^|\s)leave-event(\s|$)/.test(cls);
     if (isLeave) {
-      renderData.style = 'background-color:#f59e0b; border: none; border-radius: none; color:#ffffff; text-shadow:0 1px 1px rgba(0,0,0,0.35);';
+      renderData.style = 'background-color:#f59e0b; border: 1px solid #b45309; color:#ffffff; text-shadow:0 1px 1px rgba(0,0,0,0.35);';
       return eventRecord?.name || 'Leave';
     }
 
@@ -284,6 +413,13 @@ export default function BryntumSchedulerPage() {
       return eventRecord?.name || 'Available';
     }
 
+    const isConflict = eventRecord?.conflict === true || /(^|\s)conflict-event(\s|$)/.test(cls);
+    if (isConflict) {
+      renderData.style = 'background-image: repeating-linear-gradient(45deg, rgba(239,68,68,0.95) 0 10px, rgba(220,38,38,0.95) 10px 20px); color:#ffffff; text-shadow:0 1px 1px rgba(0,0,0,0.35);';
+      return 'Conflict';
+    }
+
+    // Assigned event
     const desig = (eventRecord?.designation ?? '').toString();
     renderData.style = getPrettyEventStyle(desig);
     return 'Assigned';
@@ -357,7 +493,7 @@ export default function BryntumSchedulerPage() {
         }]}
         // Flat list of users as resources
         resources={resources}
-        // Assigned + Available events
+        // Assigned + Conflict + Available + Leave events
         events={allEvents}
         eventRenderer={eventRenderer}
       />
@@ -537,6 +673,28 @@ export default function BryntumSchedulerPage() {
           height: 100% !important;
           box-sizing: border-box;
         }
+
+        /* Conflict event base style (striped red) */
+        .conflict-event {
+          background-image: repeating-linear-gradient(45deg, rgba(239,68,68,0.95) 0 10px, rgba(220,38,38,0.95) 10px 20px) !important;
+          color: #ffffff !important;
+          text-shadow: 0 1px 1px rgba(0,0,0,0.35) !important;
+        }
+
+        /* Conflict slices overlay (legacy, no longer used but harmless if present) */
+        .conflict-slice {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          left: 0;
+          width: 0;
+          background-image: repeating-linear-gradient(45deg, rgba(239,68,68,0.95) 0 10px, rgba(220,38,38,0.95) 10px 20px);
+          outline: 1px solid #991b1b; /* thin outline to separate */
+          border-radius: 6px; /* inherit rounding */
+          pointer-events: none; /* non-interactive */
+          z-index: 1; /* behind label */
+        }
+        .evt-label { position: relative; z-index: 2; }
       `}</style>
     </div>
   );
