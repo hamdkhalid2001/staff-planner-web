@@ -342,8 +342,8 @@ export default function BryntumSchedulerPage() {
     const target = resources.find(r => String(r.id) === '96348') || resources[0];
 
     // Show a clear 2-month leave window within the current scheduler range for visibility
-    const leaveStart = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 1); // first day of next month
-    const leaveEnd = new Date(startDate.getFullYear(), startDate.getMonth() + 3, 0);   // last day of the month after next
+    const leaveStart = new Date(startDate.getFullYear(), startDate.getMonth() + 4, 1); // first day of next month
+    const leaveEnd = new Date(startDate.getFullYear(), startDate.getMonth() + 6, 0);   // last day of the month after next
     leaveStart.setHours(0, 0, 0, 0);
     leaveEnd.setHours(23, 59, 59, 999);
 
