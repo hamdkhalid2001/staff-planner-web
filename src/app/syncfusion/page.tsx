@@ -64,6 +64,8 @@ const daysInclusive = (from: Date, to: Date) => {
     const diff = Math.floor((b.getTime() - a.getTime()) / DAY_MS) + 1;
     return Math.max(1, diff);
 };
+// Minimum days threshold for considering an Available segment
+const MIN_AVAILABLE_DAYS = 7;
 // Syncfusion Gantt interprets Duration as end-exclusive; make bars end on the given date
 const durationForGantt = (from: Date, to: Date) => {
     const inc = daysInclusive(from, to);
@@ -276,7 +278,12 @@ function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date, l
                         }))
                         .filter(s => s.end > s.start);
                     const availParts = subtractSegmentsFromInterval(availWindowStart, availWindowEnd, leaveAfterAssigned);
-                    for (const p of availParts) {
+                    // Filter out Available segments shorter than 1 week
+                    const availPartsFiltered = availParts.filter(p => {
+                        const lenDays = daysInclusive(p.start, addDays(p.end, -1));
+                        return lenDays >= MIN_AVAILABLE_DAYS;
+                    });
+                    for (const p of availPartsFiltered) {
                         const dur = durationForGantt(p.start, p.end);
                         segments.push({ StartDate: p.start, Duration: dur });
                         kinds.push('available');
@@ -418,6 +425,11 @@ function mapPerEmployeeRows(
         // Available = window minus (assignedUnion U leaves)
         const occupied = mergeIntervals([...assignedUnion, ...leaves], rangeStart, rangeEnd);
         const available = subtractSegmentsFromInterval(rangeStart, rangeEnd, occupied);
+        // Filter out Available segments shorter than 1 week
+        const availableFiltered = available.filter(p => {
+            const lenDays = daysInclusive(p.start, addDays(p.end, -1));
+            return lenDays >= MIN_AVAILABLE_DAYS;
+        });
 
         // Build disjoint segments array with kinds
         type Kind = 'assigned' | 'available' | 'leave' | 'conflict';
@@ -433,7 +445,7 @@ function mapPerEmployeeRows(
             }
         };
 
-        pushSegments(available, 'available');
+        pushSegments(availableFiltered, 'available');
         pushSegments(assignedPure, 'assigned');
         pushSegments(leaves, 'leave');
         pushSegments(conflictPure, 'conflict');
