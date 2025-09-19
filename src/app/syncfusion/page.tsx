@@ -47,31 +47,88 @@ interface MappedTask {
     AvailableEnd?: Date | null;
     // Total duration in days (required for segmented tasks)
     Duration?: number;
-    // Segments to split the bar (Assigned + Available in same row)
+    // Segments to split the bar (Assigned + Available + Leave in same row)
     Segments?: Array<{ StartDate: Date; Duration: number }>;
+    // Parallel array to identify segment types for styling in queryTaskbarInfo
+    SegmentKinds?: Array<'assigned' | 'available' | 'leave'>;
     Comments?: string;
 }
 
+// Helper date utilities
+const DAY_MS = 24 * 60 * 60 * 1000;
+const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const daysInclusive = (from: Date, to: Date) => {
+    const a = startOfDay(from);
+    const b = startOfDay(to);
+    const diff = Math.floor((b.getTime() - a.getTime()) / DAY_MS) + 1;
+    return Math.max(1, diff);
+};
+// Syncfusion Gantt interprets Duration as end-exclusive; make bars end on the given date
+const durationForGantt = (from: Date, to: Date) => {
+    const inc = daysInclusive(from, to);
+    return inc > 1 ? inc - 1 : 1; // single-day stays 1, multi-day subtract 1 so end = last day
+};
+
+// Subtract a list of [start,end) segments from one interval
+function subtractSegmentsFromInterval(baseStart: Date, baseEnd: Date, segments: Array<{ start: Date; end: Date }>) {
+    const es = baseStart.getTime();
+    const ee = baseEnd.getTime();
+    const sorted = [...segments]
+        .filter(s => s.end.getTime() > es && s.start.getTime() < ee)
+        .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+    const result: Array<{ start: Date; end: Date }> = [];
+    let cursor = es;
+
+    for (const seg of sorted) {
+        const ss = Math.max(es, seg.start.getTime());
+        const se = Math.min(ee, seg.end.getTime());
+        if (se <= ss) continue;
+        if (ss > cursor) {
+            result.push({ start: new Date(cursor), end: new Date(ss) });
+        }
+        cursor = Math.max(cursor, se);
+    }
+    if (cursor < ee) {
+        result.push({ start: new Date(cursor), end: new Date(ee) });
+    }
+
+    return result;
+}
+
+// POC: generate a leave window for a target employee similar to Bryntum implementation
+function generatePOCLeaves(raw: PlanItem[], rangeStart: Date, rangeEnd: Date) {
+    // Choose target employee: prefer id 96348 else first encountered
+    let targetId: number | string | undefined;
+    for (const item of raw) {
+        if (item?.Summary === false) {
+            if (String(item.EmployeeId ?? '') === '96348') { targetId = item.EmployeeId as any; break; }
+            if (targetId == null) targetId = item.EmployeeId ?? item.Id;
+        }
+    }
+    if (targetId == null) return new Map<string | number, Array<{ start: Date; end: Date }>>();
+
+    // Create 2-month leave window starting 4 months after rangeStart
+    const leaveStart = new Date(rangeStart.getFullYear(), rangeStart.getMonth() + 4, 1);
+    const leaveEnd = new Date(rangeStart.getFullYear(), rangeStart.getMonth() + 6, 0);
+    leaveStart.setHours(0, 0, 0, 0);
+    leaveEnd.setHours(23, 59, 59, 999);
+
+    const s = new Date(Math.max(rangeStart.getTime(), leaveStart.getTime()));
+    const e = new Date(Math.min(rangeEnd.getTime(), leaveEnd.getTime()));
+    if (e <= s) return new Map<string | number, Array<{ start: Date; end: Date }>>();
+
+    const map = new Map<string | number, Array<{ start: Date; end: Date }>>();
+    map.set(targetId, [{ start: s, end: e }]);
+    return map;
+}
+
 // Map flat assignments (no grouping). One row per plan item where Summary === false
-function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date): MappedTask[] {
+function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date, leaveMap: Map<string | number, Array<{ start: Date; end: Date }>>): MappedTask[] {
     const rows: MappedTask[] = [];
-    const DAY_MS = 24 * 60 * 60 * 1000;
 
-    const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
-    const daysInclusive = (from: Date, to: Date) => {
-        const a = startOfDay(from);
-        const b = startOfDay(to);
-        const diff = Math.floor((b.getTime() - a.getTime()) / DAY_MS) + 1;
-        return Math.max(1, diff);
-    };
-    // Syncfusion Gantt interprets Duration as end-exclusive; make bars end on the given date
-    const durationForGantt = (from: Date, to: Date) => {
-        const inc = daysInclusive(from, to);
-        return inc > 1 ? inc - 1 : 1; // single-day stays 1, multi-day subtract 1 so end = last day
-    };
-
-    // Pre-compute next assignment start date per item (by employee)
+    // Pre-compute next assignment start date per item (by employee) [kept for potential future use]
     type Enriched = { item: PlanItem; start: Date; end: Date };
     const byEmp: Record<string, Enriched[]> = {};
 
@@ -87,75 +144,92 @@ function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date): 
         }
     }
 
-    const nextStartMap = new Map<string | number, Date>();
-    Object.values(byEmp).forEach(list => {
-        list.sort((a, b) => a.start.getTime() - b.start.getTime());
-        for (let i = 0; i < list.length; i++) {
-            const cur = list[i];
-            let next: Date | undefined;
-            for (let j = i + 1; j < list.length; j++) {
-                if (list[j].start.getTime() > cur.end.getTime()) {
-                    next = list[j].start; break;
-                }
-            }
-            if (next) nextStartMap.set(cur.item.Id, next);
-        }
-    });
-
     raw.forEach((item: PlanItem) => {
         if (item?.Summary === false) {
             const start = parseMSDate(item.RenderStartDate);
             const end = parseMSDate(item.RenderEndDate);
+            if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) return;
+
+            // Clamp assigned to visible window
+            const clampedAssignedStart = new Date(Math.max(start.getTime(), rangeStart.getTime()));
+            const clampedAssignedEnd = new Date(Math.min(end.getTime(), rangeEnd.getTime()));
+            if (clampedAssignedEnd.getTime() <= clampedAssignedStart.getTime()) return;
 
             const segments: Array<{ StartDate: Date; Duration: number }> = [];
-            let availableStart: Date | null = null;
-            let availableEnd: Date | null = null;
-            // Track assigned-only duration
-            let assignedDurationDays: number | undefined = undefined;
+            const kinds: Array<'assigned' | 'available' | 'leave'> = [];
 
-            if (start && end && !isNaN(start.getTime()) && !isNaN(end.getTime()) && end > start) {
-                // Clamp assigned to visible window
-                const clampedAssignedStart = new Date(Math.max(start.getTime(), rangeStart.getTime()));
-                const clampedAssignedEnd = new Date(Math.min(end.getTime(), rangeEnd.getTime()));
+            // Build leave segments for this employee (may be empty)
+            const lv = leaveMap.get(item.EmployeeId ?? item.Id) || [];
 
-                if (clampedAssignedEnd.getTime() > clampedAssignedStart.getTime()) {
-                    const durDays = durationForGantt(clampedAssignedStart, clampedAssignedEnd);
-                    segments.push({ StartDate: clampedAssignedStart, Duration: durDays });
-                    // Duration should reflect assigned-only
-                    assignedDurationDays = durDays;
+            // 1) Assigned parts with leave subtracted
+            const assignedParts = subtractSegmentsFromInterval(clampedAssignedStart, clampedAssignedEnd, lv);
+            for (const p of assignedParts) {
+                const dur = durationForGantt(p.start, p.end);
+                segments.push({ StartDate: p.start, Duration: dur });
+                kinds.push('assigned');
+            }
+
+            // 2) Overlapping leave slices within the assigned window
+            for (const seg of lv) {
+                const ss = Math.max(seg.start.getTime(), clampedAssignedStart.getTime());
+                const se = Math.min(seg.end.getTime(), clampedAssignedEnd.getTime());
+                if (se > ss) {
+                    const sDate = new Date(ss);
+                    const eDate = new Date(se);
+                    const dur = durationForGantt(sDate, eDate);
+                    segments.push({ StartDate: sDate, Duration: dur });
+                    kinds.push('leave');
                 }
+            }
 
-                // Compute availability after clamped assigned end, within window
-                if (clampedAssignedEnd.getTime() < rangeEnd.getTime()) {
-                    const afterAssigned = addDays(clampedAssignedEnd, 1); // day after assigned
-                    // Always extend Available to the end of the visible window
-                    const candidateEnd = rangeEnd;
-                    // Clamp available bounds to window as well
-                    const clampedAvailStart = new Date(Math.max(afterAssigned.getTime(), rangeStart.getTime()));
-                    const clampedAvailEnd = new Date(rangeEnd.getTime());
-                    if (clampedAvailEnd.getTime() >= clampedAvailStart.getTime()) {
-                        availableStart = clampedAvailStart;
-                        availableEnd = clampedAvailEnd;
-                        const durAvail = durationForGantt(availableStart, availableEnd);
-                        // Removed total (assigned + available) duration logging to avoid confusion
-                        segments.push({ StartDate: availableStart, Duration: durAvail });
-                    } else {
-                        availableStart = null;
-                        availableEnd = null;
+            // 3) Available after assigned end up to rangeEnd, excluding leave
+            if (clampedAssignedEnd.getTime() < rangeEnd.getTime()) {
+                const availWindowStart = addDays(clampedAssignedEnd, 1); // day after assigned
+                const availWindowEnd = new Date(rangeEnd.getTime());
+                if (availWindowEnd.getTime() >= availWindowStart.getTime()) {
+                    const leaveAfterAssigned = lv
+                        .filter(s => s.end.getTime() > availWindowStart.getTime())
+                        .map(s => ({
+                            start: new Date(Math.max(s.start.getTime(), availWindowStart.getTime())),
+                            end: new Date(Math.min(s.end.getTime(), availWindowEnd.getTime()))
+                        }))
+                        .filter(s => s.end > s.start);
+                    const availParts = subtractSegmentsFromInterval(availWindowStart, availWindowEnd, leaveAfterAssigned);
+                    for (const p of availParts) {
+                        const dur = durationForGantt(p.start, p.end);
+                        segments.push({ StartDate: p.start, Duration: dur });
+                        kinds.push('available');
+                    }
+                    // Also add leave slices in the available window (to render leave on the row)
+                    for (const s of leaveAfterAssigned) {
+                        const dur = durationForGantt(s.start, s.end);
+                        segments.push({ StartDate: s.start, Duration: dur });
+                        kinds.push('leave');
                     }
                 }
             }
 
-            // Duration must cover all segments so split bars render. Keep assigned-only in variable if needed.
-            const durationTotal = segments.length
-                ? segments.reduce((sum, s) => sum + (s.Duration || 0), 0)
+            // Sort segments by time to ensure stable ordering with kinds aligned
+            const withKinds = segments.map((s, i) => ({ s, k: kinds[i] }));
+            withKinds.sort((a, b) => a.s.StartDate.getTime() - b.s.StartDate.getTime());
+
+            const sortedSegments = withKinds.map(x => x.s);
+            const sortedKinds = withKinds.map(x => x.k);
+
+            // Duration must cover all segments so split bars render
+            const durationTotal = sortedSegments.length
+                ? sortedSegments.reduce((sum, s) => sum + (s.Duration || 0), 0)
                 : undefined;
 
-            // Base task dates: start clamped to window; end must at least cover last segment
-            const baseStart = (start && !isNaN(start.getTime())) ? new Date(Math.max(start.getTime(), rangeStart.getTime())) : start;
-            const baseEnd = availableEnd
-                ? new Date(rangeEnd.getTime())
-                : ((end && !isNaN(end.getTime())) ? new Date(Math.min(end.getTime(), rangeEnd.getTime())) : end);
+            // Base task dates: start clamped to window; end must at least cover last segment or assigned end
+            const lastSegEnd = (() => {
+                let maxTime = clampedAssignedEnd.getTime();
+                for (const seg of sortedSegments) {
+                    const segEnd = addDays(seg.StartDate, seg.Duration); // end-exclusive; add Duration days
+                    maxTime = Math.max(maxTime, segEnd.getTime());
+                }
+                return new Date(maxTime);
+            })();
 
             rows.push({
                 TaskID: item.Id,
@@ -164,15 +238,23 @@ function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date): 
                 EmployeeId: item.EmployeeId,
                 Designation: item.Designation,
                 Grade: item.Grade,
-                StartDate: baseStart,
-                EndDate: baseEnd,
+                StartDate: clampedAssignedStart,
+                EndDate: lastSegEnd,
                 ProjectCode: item.ProjectCode,
                 ProjectName: item.ProjectName,
                 Department: item.Department,
-                AvailableStart: availableStart,
-                AvailableEnd: availableEnd,
+                AvailableStart: sortedSegments.find((_, idx) => sortedKinds[idx] === 'available')?.StartDate ?? null,
+                AvailableEnd: (() => {
+                    const idx = sortedKinds.lastIndexOf('available');
+                    if (idx >= 0) {
+                        const s = sortedSegments[idx];
+                        return addDays(s.StartDate, s.Duration);
+                    }
+                    return null;
+                })(),
                 Duration: durationTotal,
-                Segments: segments.length ? segments : undefined,
+                Segments: sortedSegments.length ? sortedSegments : undefined,
+                SegmentKinds: sortedKinds.length ? sortedKinds : undefined,
                 Comments: item.Comments
             });
         }
@@ -209,7 +291,7 @@ function setTaskbarLabel(taskbarEl: HTMLElement | null, text: string) {
     label.style.color = '#ffffff';
 }
 
-// Color taskbar red for tasks with Designation === 'Stores Clerk' or 'Quantity Surveyor'
+// Color taskbar by segment kind and role
 function onQueryTaskbarInfo(args: any) {
     const d = (args?.data?.taskData ?? args?.data) as MappedTask | undefined;
     const desig = d?.Designation?.toString().trim().toLowerCase();
@@ -218,24 +300,20 @@ function onQueryTaskbarInfo(args: any) {
     let segIndex: number | undefined = (args as any).segmentIndex ?? (args as any).segment?.index ?? (args as any).segmentIndexInternal;
     if (segIndex == null) {
         const el = args.taskbarElement as HTMLElement | null;
-        // Try dataset attributes used by Syncfusion internals in some builds
         const dsIdx = el?.dataset?.segmentIndex || el?.getAttribute?.('data-segment-index') || el?.getAttribute?.('data-seg-index');
         if (dsIdx != null) {
             const n = parseInt(String(dsIdx), 10);
             if (!isNaN(n)) segIndex = n;
         }
-        // Fallback heuristic: if multiple taskbar-like siblings exist, later one is the next segment
         if (segIndex == null && el?.parentElement) {
             const sibs = Array.from(el.parentElement.querySelectorAll('.e-taskbar')) as HTMLElement[];
             if (sibs.length > 1) segIndex = sibs.indexOf(el);
         }
     }
 
-    // Treat any segment with index > 0 as the Available segment
-    const isAvailableSegment = typeof segIndex === 'number' && segIndex > 0;
+    const kind = (typeof segIndex === 'number' && segIndex >= 0) ? d?.SegmentKinds?.[segIndex] : undefined;
 
-    if (isAvailableSegment) {
-        // Always style Available segment green and label as 'Available'
+    if (kind === 'available') {
         args.taskbarBgColor = '#22c55e';
         args.taskbarBorderColor = '#16a34a';
         args.progressBarBgColor = '#16a34a';
@@ -244,7 +322,16 @@ function onQueryTaskbarInfo(args: any) {
         return;
     }
 
-    // Assigned segment styling
+    if (kind === 'leave') {
+        args.taskbarBgColor = '#f59e0b';
+        args.taskbarBorderColor = '#b45309';
+        args.progressBarBgColor = '#d97706';
+        args.milestoneColor = '#f59e0b';
+        setTaskbarLabel(args.taskbarElement as HTMLElement | null, 'Leave');
+        return;
+    }
+
+    // Default to assigned
     if (desig === 'stores clerk' || desig === 'quantity surveyor') {
         args.taskbarBgColor = '#ef4444';
         args.taskbarBorderColor = '#b91c1c';
@@ -261,8 +348,12 @@ export default function SyncfusionPage() {
     const endAnchor = new Date(rangeStart.getFullYear(), rangeStart.getMonth() + 36, 1); // first day after the 36-month window
     const rangeEnd = new Date(endAnchor.getTime() - 24 * 60 * 60 * 1000); // last day within the 36-month window
 
-    // Flat, non-grouped data source
-    const dataSource: MappedTask[] = mapFlatAssignments((data as any).Data as PlanItem[], rangeStart, rangeEnd);
+    const raw = (data as any).Data as PlanItem[];
+    // POC leaves map (by employee)
+    const leaveMap = generatePOCLeaves(raw, rangeStart, rangeEnd);
+
+    // Flat, non-grouped data source with leave/available segments
+    const dataSource: MappedTask[] = mapFlatAssignments(raw, rangeStart, rangeEnd, leaveMap);
 
     const taskSettings = {
         id: 'TaskID',
