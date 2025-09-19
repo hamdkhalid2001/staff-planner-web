@@ -1,6 +1,14 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "@progress/kendo-theme-fluent/dist/all.scss";
+// Syncfusion styles needed for Gantt (Fluent theme)
+import "@syncfusion/ej2-base/styles/fluent.css";
+import "@syncfusion/ej2-buttons/styles/fluent.css";
+import "@syncfusion/ej2-inputs/styles/fluent.css";
+import "@syncfusion/ej2-navigations/styles/fluent.css";
+import "@syncfusion/ej2-popups/styles/fluent.css";
+import "@syncfusion/ej2-treegrid/styles/fluent.css";
+import "@syncfusion/ej2-react-gantt/styles/fluent.css";
 import "./globals.css";
 import { registerLicense } from "@syncfusion/ej2-base";
 
