@@ -50,7 +50,7 @@ interface MappedTask {
     // Segments to split the bar (Assigned + Available + Leave in same row)
     Segments?: Array<{ StartDate: Date; Duration: number }>;
     // Parallel array to identify segment types for styling in queryTaskbarInfo
-    SegmentKinds?: Array<'assigned' | 'available' | 'leave'>;
+    SegmentKinds?: Array<'assigned' | 'available' | 'leave' | 'conflict'>;
     Comments?: string;
 }
 
@@ -97,6 +97,27 @@ function subtractSegmentsFromInterval(baseStart: Date, baseEnd: Date, segments: 
     return result;
 }
 
+// Merge overlapping intervals and clip to window
+function mergeIntervals(intervals: Array<{ start: Date; end: Date }>, windowStart: Date, windowEnd: Date) {
+    const sW = windowStart.getTime();
+    const eW = windowEnd.getTime();
+    const list = intervals
+        .map(iv => ({ start: new Date(Math.max(iv.start.getTime(), sW)), end: new Date(Math.min(iv.end.getTime(), eW)) }))
+        .filter(iv => iv.end.getTime() > iv.start.getTime())
+        .sort((a, b) => a.start.getTime() - b.start.getTime());
+    const out: Array<{ start: Date; end: Date }> = [];
+    for (const iv of list) {
+        if (!out.length) { out.push({ ...iv }); continue; }
+        const last = out[out.length - 1];
+        if (iv.start.getTime() <= last.end.getTime()) {
+            if (iv.end.getTime() > last.end.getTime()) last.end = new Date(iv.end.getTime());
+        } else {
+            out.push({ ...iv });
+        }
+    }
+    return out;
+}
+
 // POC: generate a leave window for a target employee similar to Bryntum implementation
 function generatePOCLeaves(raw: PlanItem[], rangeStart: Date, rangeEnd: Date) {
     // Choose target employee: prefer id 96348 else first encountered
@@ -124,8 +145,52 @@ function generatePOCLeaves(raw: PlanItem[], rangeStart: Date, rangeEnd: Date) {
     return map;
 }
 
+// Compute conflict segments per employee where overlapping assignments >= 2
+function computeConflictSegmentsByEmployee(raw: PlanItem[], rangeStart: Date, rangeEnd: Date) {
+    const byEmp = new Map<string | number, Array<{ start: Date; end: Date }>>();
+    for (const item of raw) {
+        if (item?.Summary === false) {
+            const start = parseMSDate(item.RenderStartDate);
+            const end = parseMSDate(item.RenderEndDate);
+            if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) continue;
+            const s = new Date(Math.max(rangeStart.getTime(), start.getTime()));
+            const e = new Date(Math.min(rangeEnd.getTime(), end.getTime()));
+            if (e <= s) continue;
+            const key = (item.EmployeeId ?? item.Id) as any;
+            const arr = byEmp.get(key) || [];
+            arr.push({ start: s, end: e });
+            byEmp.set(key, arr);
+        }
+    }
+
+    const out = new Map<string | number, Array<{ start: Date; end: Date }>>();
+    for (const [emp, list] of byEmp) {
+        const points: Array<{ t: number; d: number }> = [];
+        for (const iv of list) {
+            points.push({ t: iv.start.getTime(), d: +1 });
+            points.push({ t: iv.end.getTime(), d: -1 });
+        }
+        points.sort((a, b) => a.t === b.t ? b.d - a.d : a.t - b.t);
+        let count = 0;
+        let segStart: number | null = null;
+        const segs: Array<{ start: Date; end: Date }> = [];
+        for (const p of points) {
+            const prev = count;
+            count += p.d;
+            if (prev < 2 && count >= 2) {
+                segStart = p.t;
+            } else if (prev >= 2 && count < 2) {
+                if (segStart !== null && p.t > segStart) segs.push({ start: new Date(segStart), end: new Date(p.t) });
+                segStart = null;
+            }
+        }
+        out.set(emp, segs);
+    }
+    return out;
+}
+
 // Map flat assignments (no grouping). One row per plan item where Summary === false
-function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date, leaveMap: Map<string | number, Array<{ start: Date; end: Date }>>): MappedTask[] {
+function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date, leaveMap: Map<string | number, Array<{ start: Date; end: Date }>>, conflictMap: Map<string | number, Array<{ start: Date; end: Date }>>): MappedTask[] {
     const rows: MappedTask[] = [];
 
     // Pre-compute next assignment start date per item (by employee) [kept for potential future use]
@@ -156,20 +221,36 @@ function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date, l
             if (clampedAssignedEnd.getTime() <= clampedAssignedStart.getTime()) return;
 
             const segments: Array<{ StartDate: Date; Duration: number }> = [];
-            const kinds: Array<'assigned' | 'available' | 'leave'> = [];
+            const kinds: Array<'assigned' | 'available' | 'leave' | 'conflict'> = [];
 
-            // Build leave segments for this employee (may be empty)
+            // Build leave and conflict segments for this employee (may be empty)
             const lv = leaveMap.get(item.EmployeeId ?? item.Id) || [];
+            const cf = conflictMap.get(item.EmployeeId ?? item.Id) || [];
 
-            // 1) Assigned parts with leave subtracted
-            const assignedParts = subtractSegmentsFromInterval(clampedAssignedStart, clampedAssignedEnd, lv);
+            // 1) Assigned parts with leave and conflict subtracted
+            const assignedParts = subtractSegmentsFromInterval(clampedAssignedStart, clampedAssignedEnd, [...lv, ...cf]);
             for (const p of assignedParts) {
                 const dur = durationForGantt(p.start, p.end);
                 segments.push({ StartDate: p.start, Duration: dur });
                 kinds.push('assigned');
             }
 
-            // 2) Overlapping leave slices within the assigned window
+            // 2) Conflict slices within the assigned window, excluding leave
+            for (const seg of cf) {
+                const ss = Math.max(seg.start.getTime(), clampedAssignedStart.getTime());
+                const se = Math.min(seg.end.getTime(), clampedAssignedEnd.getTime());
+                if (se > ss) {
+                    const confWindow = { start: new Date(ss), end: new Date(se) };
+                    const pureConf = subtractSegmentsFromInterval(confWindow.start, confWindow.end, lv);
+                    for (const pc of pureConf) {
+                        const dur = durationForGantt(pc.start, pc.end);
+                        segments.push({ StartDate: pc.start, Duration: dur });
+                        kinds.push('conflict');
+                    }
+                }
+            }
+
+            // 3) Leave slices within the assigned window
             for (const seg of lv) {
                 const ss = Math.max(seg.start.getTime(), clampedAssignedStart.getTime());
                 const se = Math.min(seg.end.getTime(), clampedAssignedEnd.getTime());
@@ -182,7 +263,7 @@ function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date, l
                 }
             }
 
-            // 3) Available after assigned end up to rangeEnd, excluding leave
+            // 4) Available after assigned end up to rangeEnd, excluding leave
             if (clampedAssignedEnd.getTime() < rangeEnd.getTime()) {
                 const availWindowStart = addDays(clampedAssignedEnd, 1); // day after assigned
                 const availWindowEnd = new Date(rangeEnd.getTime());
@@ -262,6 +343,144 @@ function mapFlatAssignments(raw: PlanItem[], rangeStart: Date, rangeEnd: Date, l
     return rows;
 }
 
+// NEW: Map to a single consolidated row per employee
+function mapPerEmployeeRows(
+    raw: PlanItem[],
+    rangeStart: Date,
+    rangeEnd: Date,
+    leaveMap: Map<string | number, Array<{ start: Date; end: Date }>>,
+    conflictMap: Map<string | number, Array<{ start: Date; end: Date }>>
+): MappedTask[] {
+    type Group = {
+        key: string | number;
+        employeeId?: number;
+        employeeName?: string;
+        designation?: string;
+        grade?: string;
+        items: PlanItem[];
+    };
+
+    const groups = new Map<string, Group>();
+    for (const item of raw) {
+        if (item?.Summary !== false) continue;
+        const key = (item.EmployeeId != null ? `id:${item.EmployeeId}` : `name:${(item.EmployeeName ?? '').toLowerCase()}`);
+        const g = groups.get(key) ?? {
+            key,
+            employeeId: item.EmployeeId,
+            employeeName: item.EmployeeName,
+            designation: item.Designation,
+            grade: item.Grade,
+            items: []
+        };
+        // Prefer non-empty identity fields from any item
+        if (!g.employeeName && item.EmployeeName) g.employeeName = item.EmployeeName;
+        if (!g.designation && item.Designation) g.designation = item.Designation;
+        if (!g.grade && item.Grade) g.grade = item.Grade;
+        g.items.push(item);
+        groups.set(key, g);
+    }
+
+    const rows: MappedTask[] = [];
+
+    for (const [, g] of groups) {
+        // Collect and clamp all assignment intervals for employee
+        const assignedIntervals: Array<{ start: Date; end: Date }> = [];
+        for (const it of g.items) {
+            const s = parseMSDate(it.RenderStartDate);
+            const e = parseMSDate(it.RenderEndDate);
+            if (!s || !e || isNaN(s.getTime()) || isNaN(e.getTime()) || e <= s) continue;
+            const cs = new Date(Math.max(s.getTime(), rangeStart.getTime()));
+            const ce = new Date(Math.min(e.getTime(), rangeEnd.getTime()));
+            if (ce > cs) assignedIntervals.push({ start: cs, end: ce });
+        }
+        const assignedUnion = mergeIntervals(assignedIntervals, rangeStart, rangeEnd);
+
+        // Leaves and conflicts, clamped
+        const lvRaw = leaveMap.get(g.employeeId ?? g.key) || [];
+        const cfRaw = conflictMap.get(g.employeeId ?? g.key) || [];
+        const leaves = mergeIntervals(lvRaw, rangeStart, rangeEnd);
+        const conflicts = mergeIntervals(cfRaw, rangeStart, rangeEnd);
+
+        // Assigned minus leaves and conflicts
+        const assignedPure: Array<{ start: Date; end: Date }> = [];
+        for (const iv of assignedUnion) {
+            const parts = subtractSegmentsFromInterval(iv.start, iv.end, [...leaves, ...conflicts]);
+            assignedPure.push(...parts);
+        }
+
+        // Conflicts minus leaves
+        const conflictPure: Array<{ start: Date; end: Date }> = [];
+        for (const iv of conflicts) {
+            const parts = subtractSegmentsFromInterval(iv.start, iv.end, leaves);
+            conflictPure.push(...parts);
+        }
+
+        // Available = window minus (assignedUnion U leaves)
+        const occupied = mergeIntervals([...assignedUnion, ...leaves], rangeStart, rangeEnd);
+        const available = subtractSegmentsFromInterval(rangeStart, rangeEnd, occupied);
+
+        // Build disjoint segments array with kinds
+        type Kind = 'assigned' | 'available' | 'leave' | 'conflict';
+        let segments: Array<{ StartDate: Date; Duration: number } > = [];
+        let kinds: Kind[] = [];
+
+        const pushSegments = (list: Array<{ start: Date; end: Date }>, kind: Kind) => {
+            for (const p of list) {
+                const dur = durationForGantt(p.start, p.end);
+                if (dur <= 0) continue;
+                segments.push({ StartDate: p.start, Duration: dur });
+                kinds.push(kind);
+            }
+        };
+
+        pushSegments(available, 'available');
+        pushSegments(assignedPure, 'assigned');
+        pushSegments(leaves, 'leave');
+        pushSegments(conflictPure, 'conflict');
+
+        // Sort and then merge adjacent segments of same kind
+        const withKinds = segments.map((s, i) => ({ s, k: kinds[i] }));
+        withKinds.sort((a, b) => a.s.StartDate.getTime() - b.s.StartDate.getTime());
+
+        const merged: Array<{ s: { StartDate: Date; Duration: number }; k: Kind }> = [];
+        for (const cur of withKinds) {
+            if (!merged.length) { merged.push(cur); continue; }
+            const last = merged[merged.length - 1];
+            const lastEnd = addDays(last.s.StartDate, last.s.Duration).getTime();
+            if (cur.k === last.k && cur.s.StartDate.getTime() === lastEnd) {
+                // extend
+                last.s.Duration += cur.s.Duration;
+            } else {
+                merged.push(cur);
+            }
+        }
+
+        const finalSegments = merged.map(x => x.s);
+        const finalKinds = merged.map(x => x.k);
+
+        // Compute row duration and dates
+        const durationTotal = finalSegments.reduce((sum, s) => sum + (s.Duration || 0), 0);
+        const rowStart = finalSegments.length ? finalSegments[0].StartDate : rangeStart;
+        const rowEnd = finalSegments.length ? addDays(finalSegments[finalSegments.length - 1].StartDate, finalSegments[finalSegments.length - 1].Duration) : rangeEnd;
+
+        rows.push({
+            TaskID: (g.employeeId != null ? g.employeeId : g.key),
+            TaskName: g.employeeName || String(g.key),
+            EmployeeName: g.employeeName || String(g.key),
+            EmployeeId: g.employeeId as any,
+            Designation: g.designation,
+            Grade: g.grade,
+            StartDate: rowStart,
+            EndDate: rowEnd,
+            Duration: durationTotal,
+            Segments: finalSegments,
+            SegmentKinds: finalKinds
+        });
+    }
+
+    return rows;
+}
+
 // Utility to ensure a visible centered label inside a taskbar element
 function setTaskbarLabel(taskbarEl: HTMLElement | null, text: string) {
     if (!taskbarEl) return;
@@ -331,6 +550,21 @@ function onQueryTaskbarInfo(args: any) {
         return;
     }
 
+    if (kind === 'conflict') {
+        // Apply a striped red conflict style via element since color props don't support gradients
+        const el = args.taskbarElement as HTMLElement | null;
+        if (el) {
+            el.style.backgroundImage = 'repeating-linear-gradient(45deg, rgba(239,68,68,0.95) 0 10px, rgba(220,38,38,0.95) 10px 20px)';
+            el.style.color = '#ffffff';
+        }
+        args.taskbarBgColor = '#ef4444';
+        args.taskbarBorderColor = '#991b1b';
+        args.progressBarBgColor = '#dc2626';
+        args.milestoneColor = '#ef4444';
+        setTaskbarLabel(args.taskbarElement as HTMLElement | null, 'Conflict');
+        return;
+    }
+
     // Default to assigned
     if (desig === 'stores clerk' || desig === 'quantity surveyor') {
         args.taskbarBgColor = '#ef4444';
@@ -351,9 +585,11 @@ export default function SyncfusionPage() {
     const raw = (data as any).Data as PlanItem[];
     // POC leaves map (by employee)
     const leaveMap = generatePOCLeaves(raw, rangeStart, rangeEnd);
+    // Conflicts map (by employee)
+    const conflictMap = computeConflictSegmentsByEmployee(raw, rangeStart, rangeEnd);
 
-    // Flat, non-grouped data source with leave/available segments
-    const dataSource: MappedTask[] = mapFlatAssignments(raw, rangeStart, rangeEnd, leaveMap);
+    // Flat, non-grouped data source consolidated to one row per employee with disjoint segments
+    const dataSource: MappedTask[] = mapPerEmployeeRows(raw, rangeStart, rangeEnd, leaveMap, conflictMap);
 
     const taskSettings = {
         id: 'TaskID',
